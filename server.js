@@ -9,6 +9,9 @@ const { sdk, mode } = createSdk(config);
 
 startPeerWorker({ sdk, config });
 
+const MAX_ACTIVE_RUNS = 4;
+let activeRuns = 0;
+
 const server = http.createServer(async (req, res) => {
   if (req.url !== '/' || req.method !== 'GET') {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -18,7 +21,27 @@ const server = http.createServer(async (req, res) => {
 
   if (!checkAuth(req, res, config)) return;
 
-  await handleRunRequest(req, res, { sdk, config });
+  if (activeRuns >= MAX_ACTIVE_RUNS) {
+    console.warn(
+      `[services-monitor] reject run due to slot limit (${MAX_ACTIVE_RUNS}) on ${config.hostAddr}`
+    );
+    res.writeHead(429, { 'Content-Type': 'text/plain' });
+    res.end('Too many concurrent runs on this node (max 4). Please retry shortly.');
+    return;
+  }
+
+  console.log(
+    `[services-monitor] accepting run; active slots ${activeRuns + 1}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+  );
+  activeRuns += 1;
+  try {
+    await handleRunRequest(req, res, { sdk, config });
+  } finally {
+    activeRuns = Math.max(0, activeRuns - 1);
+    console.log(
+      `[services-monitor] run ended; active slots ${activeRuns}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+    );
+  }
 });
 
 server.listen(config.port, config.listenHost, () => {

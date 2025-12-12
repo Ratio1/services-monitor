@@ -54,6 +54,9 @@ async function scanForRuns({ sdk, config, state }) {
 
 async function handlePeerJob({ sdk, config, runPayload }) {
   const { runId, fileCid, startedAt, initiator } = runPayload;
+  console.log(
+    `[services-monitor][peer ${config.hostAddr}][run ${runId}] handling broadcast from ${initiator} cid=${fileCid}`
+  );
   const ackedAt = Date.now();
   const ackPayload = {
     runId,
@@ -71,6 +74,9 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     key: `ack:${runId}:${config.hostAddr}`,
     value: JSON.stringify(ackPayload)
   });
+  console.log(
+    `[services-monitor][peer ${config.hostAddr}][run ${runId}] posted ack in ${ackPayload.ackLatencyMs}ms`
+  );
 
   let downloadMs = null;
   let streamMs = null;
@@ -84,8 +90,14 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     const payload = await readR1fsPayload(downloadRes.result);
     streamMs = payload.streamMs;
     preview = payload.buffer.toString('utf8', 0, Math.min(50, payload.buffer.length));
+    console.log(
+      `[services-monitor][peer ${config.hostAddr}][run ${runId}] downloaded initiator file in ${downloadMs}ms stream ${streamMs}ms`
+    );
   } catch (err) {
     downloadError = err?.message || String(err);
+    console.warn(
+      `[services-monitor][peer ${config.hostAddr}][run ${runId}] download error: ${downloadError}`
+    );
   }
 
   const peerResult = {
@@ -108,6 +120,9 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     key: `peer:${runId}:${config.hostAddr}`,
     value: JSON.stringify(peerResult)
   });
+  console.log(
+    `[services-monitor][peer ${config.hostAddr}][run ${runId}] posted download metrics (error=${downloadError ? 'yes' : 'no'})`
+  );
 
   let reverseCid = null;
   let reverseUploadMs = null;
@@ -125,8 +140,14 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     reverseCid = uploadRes.cid;
     reverseUploadMs = Date.now() - uploadStart;
     reversePreview = revPreview;
+    console.log(
+      `[services-monitor][peer ${config.hostAddr}][run ${runId}] uploaded reverse file cid=${reverseCid} in ${reverseUploadMs}ms`
+    );
   } catch (err) {
     reverseError = err?.message || String(err);
+    console.warn(
+      `[services-monitor][peer ${config.hostAddr}][run ${runId}] reverse upload error: ${reverseError}`
+    );
   }
 
   const reversePayload = {
@@ -146,6 +167,9 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     key: `reverse:${runId}:${config.hostAddr}`,
     value: JSON.stringify(reversePayload)
   });
+  console.log(
+    `[services-monitor][peer ${config.hostAddr}][run ${runId}] posted reverse payload (error=${reverseError ? 'yes' : 'no'})`
+  );
 }
 
 module.exports = { startPeerWorker, handlePeerJob };

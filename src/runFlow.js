@@ -25,20 +25,34 @@ async function handleRunRequest(req, res, { sdk, config }) {
   const runId = `${Date.now().toString(36)}-${shortId()}`;
   const runSignature = await maybeSign(config, `run:${runId}`);
   const reqClosed = { value: false };
+  let initiatorCid = null;
+  const peerFileCids = [];
+  let cleaned = false;
   req.on('close', () => {
     reqClosed.value = true;
+    console.warn(`[services-monitor][run ${runId}] client disconnected; will abort soon`);
   });
 
   try {
-    const ensureNotTimedOut = () => {
+    const ensureActive = () => {
+      if (reqClosed.value) {
+        throw new Error('Client disconnected; aborting run');
+      }
       if (Date.now() > abortAt) {
         throw new Error('Run exceeded overall timeout (~3 minutes)');
       }
     };
 
+    ensureActive();
+    console.log(
+      `[services-monitor][run ${runId}] started on ${config.hostAddr} with peers: ${config.peers.join(
+        ', '
+      ) || 'none'}`
+    );
     await logChunk(res, `Services Monitor started on ${config.hostAddr} (run ${runId})`, 'step');
     if (runSignature) {
       await logChunk(res, 'Derived run signature via cstore-auth hasher', 'muted');
+      console.log(`[services-monitor][run ${runId}] derived run signature`);
     }
 
     await logChunk(
@@ -52,6 +66,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
     const testSeed = shortId();
     const { buffer, preview } = createTestFile(testSeed);
     await logChunk(res, `Created ~1MB test file (seed ${testSeed}, preview: "${preview}")`, 'muted');
+    console.log(`[services-monitor][run ${runId}] created test file (seed ${testSeed})`);
 
     const uploadStart = Date.now();
     const uploadRes = await sdk.r1fs.addFile({
@@ -60,11 +75,14 @@ async function handleRunRequest(req, res, { sdk, config }) {
       contentType: 'text/plain'
     });
     const uploadMs = Date.now() - uploadStart;
-    const initiatorCid = uploadRes.cid;
+    initiatorCid = uploadRes.cid;
     await logChunk(
       res,
       `Saved initiator file to R1FS in ${formatMs(uploadMs)} (cid: ${initiatorCid})`,
       'success'
+    );
+    console.log(
+      `[services-monitor][run ${runId}] uploaded initiator file cid=${initiatorCid} in ${uploadMs}ms`
     );
 
     const broadcastStart = Date.now();
@@ -91,8 +109,11 @@ async function handleRunRequest(req, res, { sdk, config }) {
       `Posted file notification to CStore in ${formatMs(broadcastMs)}`,
       'success'
     );
+    console.log(
+      `[services-monitor][run ${runId}] posted broadcast to cstore in ${broadcastMs}ms (expires at ${broadcastPayload.expiresAt})`
+    );
 
-    ensureNotTimedOut();
+    ensureActive();
 
     const acks = await waitForPeerData(
       sdk,
@@ -104,10 +125,13 @@ async function handleRunRequest(req, res, { sdk, config }) {
         hkey: config.hkey,
         key: `ack:${runId}:${peer}`
       }),
-      abortAt
+      abortAt,
+      () => reqClosed.value
     );
     for (const ack of acks) {
+      ensureActive();
       if (ack.missing) {
+        console.warn(`[services-monitor][run ${runId}] peer ${ack.peer} missing ack`);
         await logChunk(
           res,
           `Peer ${ack.peer} did not acknowledge within ${formatMs(config.timeouts.ackMs)}`,
@@ -115,6 +139,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
         );
         continue;
       }
+      console.log(
+        `[services-monitor][run ${runId}] peer ${ack.peer} acked in ${ack.ackLatencyMs}ms`
+      );
       await logChunk(
         res,
         `Peer ${ack.peer} responded to CStore message in ${formatMs(ack.ackLatencyMs ?? 0)}`,
@@ -122,7 +149,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
       );
     }
 
-    ensureNotTimedOut();
+    ensureActive();
 
     const peerDownloads = await waitForPeerData(
       sdk,
@@ -134,10 +161,15 @@ async function handleRunRequest(req, res, { sdk, config }) {
         hkey: config.hkey,
         key: `peer:${runId}:${peer}`
       }),
-      abortAt
+      abortAt,
+      () => reqClosed.value
     );
     for (const pd of peerDownloads) {
+      ensureActive();
       if (pd.missing) {
+        console.warn(
+          `[services-monitor][run ${runId}] peer ${pd.peer} missing download metrics within timeout`
+        );
         await logChunk(
           res,
           `Peer ${pd.peer} did not report download metrics within ${formatMs(
@@ -148,6 +180,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
         continue;
       }
       if (pd.error) {
+        console.warn(`[services-monitor][run ${runId}] peer ${pd.peer} reported download error`, pd.error);
         await logChunk(
           res,
           `Peer ${pd.peer} reported an error while downloading: ${pd.error}`,
@@ -155,6 +188,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
         );
         continue;
       }
+      console.log(
+        `[services-monitor][run ${runId}] peer ${pd.peer} download=${pd.downloadMs}ms stream=${pd.streamMs}ms`
+      );
       await logChunk(
         res,
         `Peer ${pd.peer}: downloaded in ${formatMs(
@@ -164,7 +200,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
       );
     }
 
-    ensureNotTimedOut();
+    ensureActive();
 
     const reverseAnnouncements = await waitForPeerData(
       sdk,
@@ -176,14 +212,17 @@ async function handleRunRequest(req, res, { sdk, config }) {
         hkey: config.hkey,
         key: `reverse:${runId}:${peer}`
       }),
-      abortAt
+      abortAt,
+      () => reqClosed.value
     );
 
-    const peerFileCids = [];
     for (const reverse of reverseAnnouncements) {
-      ensureNotTimedOut();
+      ensureActive();
 
       if (reverse.missing) {
+        console.warn(
+          `[services-monitor][run ${runId}] peer ${reverse.peer} missing reverse upload announcement`
+        );
         await logChunk(
           res,
           `Peer ${reverse.peer} did not post reverse file within ${formatMs(
@@ -194,6 +233,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
         continue;
       }
       if (reverse.error || !reverse.fileCid) {
+        console.warn(
+          `[services-monitor][run ${runId}] peer ${reverse.peer} reverse upload failed: ${reverse.error}`
+        );
         await logChunk(
           res,
           `Peer ${reverse.peer} reverse upload failed: ${reverse.error || 'no cid provided'}`,
@@ -202,6 +244,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
         continue;
       }
 
+      console.log(
+        `[services-monitor][run ${runId}] reverse file from ${reverse.peer} cid=${reverse.fileCid} uploaded in ${reverse.uploadMs}ms`
+      );
       const metadataLatency = reverse.uploadedAt ? Date.now() - reverse.uploadedAt : null;
       await logChunk(
         res,
@@ -235,6 +280,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
 
       peerFileCids.push(reverse.fileCid);
 
+      console.log(
+        `[services-monitor][run ${runId}] received reverse from ${reverse.peer} fetch=${fetchMs}ms stream=${serverStreamMs}ms browser=${browserSendMs}ms`
+      );
       await logChunk(
         res,
         `Received file from ${reverse.peer} – download: ${formatMs(
@@ -247,10 +295,21 @@ async function handleRunRequest(req, res, { sdk, config }) {
     }
 
     await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], runId);
+    cleaned = true;
+    console.log(
+      `[services-monitor][run ${runId}] cleaned artifacts (${[initiatorCid, ...peerFileCids].filter(Boolean).length} cids)`
+    );
     await logChunk(res, 'Test completed. Cleaned up artifacts.', 'step');
   } catch (err) {
+    console.error(`[services-monitor][run ${runId}] failed`, err?.message || err);
     await logChunk(res, `Run failed: ${err?.message || err}`, 'error');
   } finally {
+    if (!cleaned) {
+      await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], runId).catch(() => {});
+      console.log(
+        `[services-monitor][run ${runId}] cleanup attempted in finally (${[initiatorCid, ...peerFileCids].filter(Boolean).length} cids)`
+      );
+    }
     if (!reqClosed.value) {
       res.end(buildHtmlFooter());
     }

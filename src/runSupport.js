@@ -1,11 +1,21 @@
 const { sleep } = require('./utils');
 const { safeParseJson } = require('./utils');
 
-async function waitForPeerData(sdk, runId, config, label, timeoutMs, keyBuilder, overallDeadlineMs) {
+async function waitForPeerData(
+  sdk,
+  runId,
+  config,
+  label,
+  timeoutMs,
+  keyBuilder,
+  overallDeadlineMs,
+  shouldAbort
+) {
   const deadline = Math.min(Date.now() + timeoutMs, overallDeadlineMs ?? Number.POSITIVE_INFINITY);
   const results = new Map();
 
   while (Date.now() < deadline && results.size < config.peers.length) {
+    if (shouldAbort?.()) break;
     for (const peer of config.peers) {
       if (results.has(peer)) continue;
       const { hkey, key } = keyBuilder(peer);
@@ -16,6 +26,7 @@ async function waitForPeerData(sdk, runId, config, label, timeoutMs, keyBuilder,
       results.set(peer, parsed);
     }
     if (results.size >= config.peers.length) break;
+    if (shouldAbort?.()) break;
     await sleep(750);
   }
 
