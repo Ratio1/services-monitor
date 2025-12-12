@@ -1,0 +1,22 @@
+{
+  "name": "services-monitor",
+  "version": "1.0.0",
+  "description": "A single-page, authenticated dashboard that exercises Ratio1’s distributed storage (R1FS) and state fabric (CStore) across a cluster of edge nodes, while streaming every step and timing to your browser.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"No automated tests. Run 'npm start' to launch the monitor.\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com-aidamian:Ratio1/services-monitor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "dependencies": {
+    "@ratio1/cstore-auth-ts": "^0.6.0",
+    "@ratio1/edge-sdk-ts": "^1.4.0"
+  }
+}
