@@ -10,7 +10,7 @@ const { sdk, mode } = createSdk(config);
 startPeerWorker({ sdk, config });
 
 const MAX_ACTIVE_RUNS = 4;
-let activeRuns = 0;
+const availableSlots = new Set(Array.from({ length: MAX_ACTIVE_RUNS }, (_, i) => i + 1));
 
 const server = http.createServer(async (req, res) => {
   if (req.url !== '/' || req.method !== 'GET') {
@@ -21,7 +21,8 @@ const server = http.createServer(async (req, res) => {
 
   if (!checkAuth(req, res, config)) return;
 
-  if (activeRuns >= MAX_ACTIVE_RUNS) {
+  const slotId = [...availableSlots][0];
+  if (!slotId) {
     console.warn(
       `[services-monitor] reject run due to slot limit (${MAX_ACTIVE_RUNS}) on ${config.hostAddr}`
     );
@@ -30,16 +31,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  availableSlots.delete(slotId);
+  const activeRuns = MAX_ACTIVE_RUNS - availableSlots.size;
   console.log(
-    `[services-monitor] accepting run; active slots ${activeRuns + 1}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+    `[services-monitor] accepting run in slot ${slotId}; active slots ${activeRuns}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
   );
-  activeRuns += 1;
   try {
-    await handleRunRequest(req, res, { sdk, config });
+    await handleRunRequest(req, res, { sdk, config, slotId });
   } finally {
-    activeRuns = Math.max(0, activeRuns - 1);
+    availableSlots.add(slotId);
+    const remaining = MAX_ACTIVE_RUNS - availableSlots.size;
     console.log(
-      `[services-monitor] run ended; active slots ${activeRuns}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+      `[services-monitor] run ended in slot ${slotId}; active slots ${remaining}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
     );
   }
 });

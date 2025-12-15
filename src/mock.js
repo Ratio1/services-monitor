@@ -51,7 +51,7 @@ function createMockSdk(hostAddr, peers) {
   return { cstore, r1fs, _mock: { files, hsets, hostAddr, peers } };
 }
 
-function seedReverseFiles(mockSdk, runId, peers) {
+function seedReverseFiles(mockSdk, runId, peers, slotKey = `seed-${runId}`) {
   for (const peer of peers) {
     const { buffer, preview } = createTestFile(peer);
     mockSdk.r1fs
@@ -59,11 +59,12 @@ function seedReverseFiles(mockSdk, runId, peers) {
       .then((res) => {
         return mockSdk.cstore.hset({
           hkey: 'services-monitor',
-          key: `reverse:${runId}:${peer}`,
+          key: `reverse:${slotKey}:${peer}`,
           value: JSON.stringify({
             runId,
             peer,
             initiator: 'initiator-local',
+            slotKey,
             fileCid: res.cid,
             uploadedAt: Date.now(),
             uploadMs: 5,

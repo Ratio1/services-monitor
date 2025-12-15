@@ -4,7 +4,7 @@ const { shortId } = require('./utils');
 const { safeParseJson } = require('./utils');
 
 function startPeerWorker({ sdk, config }) {
-  const state = { handledRuns: new Set(), polling: false };
+  const state = { handledRuns: new Map(), polling: false };
   const intervalMs = 2_000;
 
   const poll = async () => {
@@ -29,6 +29,7 @@ async function scanForRuns({ sdk, config, state }) {
     return {};
   });
 
+  const now = Date.now();
   for (const [key, raw] of Object.entries(all)) {
     if (!key.startsWith('run:')) continue;
     const payload = safeParseJson(raw);
@@ -36,7 +37,7 @@ async function scanForRuns({ sdk, config, state }) {
     if (!config.testMode && payload.initiator === config.hostAddr) continue;
     if (payload.expiresAt && Date.now() > payload.expiresAt) continue;
     if (state.handledRuns.has(payload.runId)) continue;
-    state.handledRuns.add(payload.runId);
+    state.handledRuns.set(payload.runId, payload.expiresAt || now + config.timeouts.overallMs);
     if (config.testMode) {
       for (const peer of config.peers) {
         const peerConfig = { ...config, hostAddr: peer };
@@ -50,18 +51,25 @@ async function scanForRuns({ sdk, config, state }) {
       );
     }
   }
+  for (const [runId, expiresAt] of state.handledRuns.entries()) {
+    if (expiresAt && expiresAt < now - 5_000) {
+      state.handledRuns.delete(runId);
+    }
+  }
 }
 
 async function handlePeerJob({ sdk, config, runPayload }) {
   const { runId, fileCid, startedAt, initiator } = runPayload;
+  const slotKey = runPayload.slotKey || `${initiator || 'host'}-${runPayload.slotId || '0'}`;
   console.log(
-    `[services-monitor][peer ${config.hostAddr}][run ${runId}] handling broadcast from ${initiator} cid=${fileCid}`
+    `[services-monitor][peer ${config.hostAddr}][run ${runId}] handling broadcast from ${initiator} slot ${slotKey} cid=${fileCid}`
   );
   const ackedAt = Date.now();
   const ackPayload = {
     runId,
     peer: config.hostAddr,
     initiator,
+    slotKey,
     ackedAt,
     ackLatencyMs: startedAt ? ackedAt - startedAt : null,
     runSignature: runPayload.runSignature || null,
@@ -71,7 +79,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
 
   await sdk.cstore.hset({
     hkey: config.hkey,
-    key: `ack:${runId}:${config.hostAddr}`,
+    key: `ack:${slotKey}:${config.hostAddr}`,
     value: JSON.stringify(ackPayload)
   });
   console.log(
@@ -104,6 +112,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     runId,
     peer: config.hostAddr,
     initiator,
+    slotKey,
     fileCid,
     ackedAt,
     ackLatencyMs: ackPayload.ackLatencyMs,
@@ -117,7 +126,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
 
   await sdk.cstore.hset({
     hkey: config.hkey,
-    key: `peer:${runId}:${config.hostAddr}`,
+    key: `peer:${slotKey}:${config.hostAddr}`,
     value: JSON.stringify(peerResult)
   });
   console.log(
@@ -154,6 +163,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
     runId,
     peer: config.hostAddr,
     initiator,
+    slotKey,
     fileCid: reverseCid,
     uploadedAt: Date.now(),
     uploadMs: reverseUploadMs,
@@ -164,7 +174,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
 
   await sdk.cstore.hset({
     hkey: config.hkey,
-    key: `reverse:${runId}:${config.hostAddr}`,
+    key: `reverse:${slotKey}:${config.hostAddr}`,
     value: JSON.stringify(reversePayload)
   });
   console.log(

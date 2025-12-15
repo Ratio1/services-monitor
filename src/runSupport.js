@@ -9,7 +9,8 @@ async function waitForPeerData(
   timeoutMs,
   keyBuilder,
   overallDeadlineMs,
-  shouldAbort
+  shouldAbort,
+  accept
 ) {
   const deadline = Math.min(Date.now() + timeoutMs, overallDeadlineMs ?? Number.POSITIVE_INFINITY);
   const results = new Map();
@@ -23,6 +24,7 @@ async function waitForPeerData(
       if (!raw) continue;
       const parsed = safeParseJson(raw);
       if (!parsed) continue;
+      if (accept && !accept(parsed)) continue;
       results.set(peer, parsed);
     }
     if (results.size >= config.peers.length) break;
@@ -39,7 +41,7 @@ async function waitForPeerData(
   });
 }
 
-async function cleanupArtifacts(sdk, config, cids, runId) {
+async function cleanupArtifacts(sdk, config, cids, slotKey, runId) {
   const uniqueCids = Array.from(new Set(cids.filter(Boolean)));
   if (uniqueCids.length > 0) {
     try {
@@ -55,10 +57,10 @@ async function cleanupArtifacts(sdk, config, cids, runId) {
   }
 
   const cleanupKeys = [
-    `run:${runId}`,
-    ...config.peers.map((p) => `ack:${runId}:${p}`),
-    ...config.peers.map((p) => `peer:${runId}:${p}`),
-    ...config.peers.map((p) => `reverse:${runId}:${p}`)
+    `run:${slotKey}`,
+    ...config.peers.map((p) => `ack:${slotKey}:${p}`),
+    ...config.peers.map((p) => `peer:${slotKey}:${p}`),
+    ...config.peers.map((p) => `reverse:${slotKey}:${p}`)
   ];
 
   for (const key of cleanupKeys) {
@@ -66,7 +68,7 @@ async function cleanupArtifacts(sdk, config, cids, runId) {
       await sdk.cstore.hset({
         hkey: config.hkey,
         key,
-        value: JSON.stringify({ runId, clearedAt: Date.now() })
+        value: JSON.stringify({ runId, slotKey, clearedAt: Date.now() })
       });
     } catch (err) {
       console.warn('[services-monitor] failed to clear cstore key', key, err?.message);

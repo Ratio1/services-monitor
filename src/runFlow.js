@@ -12,7 +12,7 @@ const {
 const { maybeSign } = require('./signing');
 const { waitForPeerData, cleanupArtifacts } = require('./runSupport');
 
-async function handleRunRequest(req, res, { sdk, config }) {
+async function handleRunRequest(req, res, { sdk, config, slotId }) {
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -24,6 +24,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
   const abortAt = Date.now() + config.timeouts.overallMs;
   const runId = `${Date.now().toString(36)}-${shortId()}`;
   const runSignature = await maybeSign(config, `run:${runId}`);
+  const slotKey = `${config.hostAddr}-${slotId || 0}`;
   const reqClosed = { value: false };
   let initiatorCid = null;
   const peerFileCids = [];
@@ -45,11 +46,15 @@ async function handleRunRequest(req, res, { sdk, config }) {
 
     ensureActive();
     console.log(
-      `[services-monitor][run ${runId}] started on ${config.hostAddr} with peers: ${config.peers.join(
-        ', '
-      ) || 'none'}`
+      `[services-monitor][run ${runId}] started on ${config.hostAddr} slot ${slotId} with peers: ${
+        config.peers.join(', ') || 'none'
+      }`
     );
-    await logChunk(res, `Services Monitor started on ${config.hostAddr} (run ${runId})`, 'step');
+    await logChunk(
+      res,
+      `Services Monitor started on ${config.hostAddr} (slot ${slotId}, run ${runId})`,
+      'step'
+    );
     if (runSignature) {
       await logChunk(res, 'Derived run signature via cstore-auth hasher', 'muted');
       console.log(`[services-monitor][run ${runId}] derived run signature`);
@@ -90,6 +95,8 @@ async function handleRunRequest(req, res, { sdk, config }) {
       type: 'initiator-broadcast',
       runId,
       initiator: config.hostAddr,
+      slotKey,
+      slotId,
       fileCid: initiatorCid,
       preview,
       startedAt: broadcastStart,
@@ -100,7 +107,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
     };
     await sdk.cstore.hset({
       hkey: config.hkey,
-      key: `run:${runId}`,
+      key: `run:${slotKey}`,
       value: JSON.stringify(broadcastPayload)
     });
     const broadcastMs = Date.now() - broadcastStart;
@@ -123,10 +130,11 @@ async function handleRunRequest(req, res, { sdk, config }) {
       config.timeouts.ackMs,
       (peer) => ({
         hkey: config.hkey,
-        key: `ack:${runId}:${peer}`
+        key: `ack:${slotKey}:${peer}`
       }),
       abortAt,
-      () => reqClosed.value
+      () => reqClosed.value,
+      (payload) => payload.runId === runId && (!payload.slotKey || payload.slotKey === slotKey)
     );
     for (const ack of acks) {
       ensureActive();
@@ -159,10 +167,11 @@ async function handleRunRequest(req, res, { sdk, config }) {
       config.timeouts.downloadMs,
       (peer) => ({
         hkey: config.hkey,
-        key: `peer:${runId}:${peer}`
+        key: `peer:${slotKey}:${peer}`
       }),
       abortAt,
-      () => reqClosed.value
+      () => reqClosed.value,
+      (payload) => payload.runId === runId && (!payload.slotKey || payload.slotKey === slotKey)
     );
     for (const pd of peerDownloads) {
       ensureActive();
@@ -210,10 +219,11 @@ async function handleRunRequest(req, res, { sdk, config }) {
       config.timeouts.reverseMs,
       (peer) => ({
         hkey: config.hkey,
-        key: `reverse:${runId}:${peer}`
+        key: `reverse:${slotKey}:${peer}`
       }),
       abortAt,
-      () => reqClosed.value
+      () => reqClosed.value,
+      (payload) => payload.runId === runId && (!payload.slotKey || payload.slotKey === slotKey)
     );
 
     for (const reverse of reverseAnnouncements) {
@@ -294,7 +304,7 @@ async function handleRunRequest(req, res, { sdk, config }) {
       );
     }
 
-    await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], runId);
+    await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], slotKey, runId);
     cleaned = true;
     console.log(
       `[services-monitor][run ${runId}] cleaned artifacts (${[initiatorCid, ...peerFileCids].filter(Boolean).length} cids)`
@@ -305,7 +315,9 @@ async function handleRunRequest(req, res, { sdk, config }) {
     await logChunk(res, `Run failed: ${err?.message || err}`, 'error');
   } finally {
     if (!cleaned) {
-      await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], runId).catch(() => {});
+      await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], slotKey, runId).catch(
+        () => {}
+      );
       console.log(
         `[services-monitor][run ${runId}] cleanup attempted in finally (${[initiatorCid, ...peerFileCids].filter(Boolean).length} cids)`
       );
