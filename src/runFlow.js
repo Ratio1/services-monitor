@@ -12,6 +12,37 @@ const {
 const { maybeSign } = require('./signing');
 const { waitForPeerData, cleanupArtifacts } = require('./runSupport');
 
+async function verifyBroadcastRoundTrip({ sdk, config, broadcastPayload }) {
+  const key = `run:${broadcastPayload.slotKey}`;
+  const raw = await sdk.cstore.hget({
+    hkey: config.hkey,
+    key
+  });
+
+  if (!raw) {
+    throw new Error('CStore round-trip read returned no value');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`CStore round-trip read returned invalid JSON: ${err.message}`);
+  }
+
+  const matchesBroadcast =
+    parsed.runId === broadcastPayload.runId &&
+    parsed.slotKey === broadcastPayload.slotKey &&
+    parsed.fileCid === broadcastPayload.fileCid &&
+    parsed.initiator === broadcastPayload.initiator;
+
+  if (!matchesBroadcast) {
+    throw new Error('CStore round-trip read did not match the written broadcast payload');
+  }
+
+  return parsed;
+}
+
 async function handleRunRequest(req, res, { sdk, config, slotId }) {
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
@@ -118,6 +149,19 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     );
     console.log(
       `[services-monitor][run ${runId}] posted broadcast to cstore in ${broadcastMs}ms (expires at ${broadcastPayload.expiresAt})`
+    );
+    const verifiedBroadcast = await verifyBroadcastRoundTrip({
+      sdk,
+      config,
+      broadcastPayload
+    });
+    await logChunk(
+      res,
+      `Verified CStore round-trip for run:${slotKey} (runId ${verifiedBroadcast.runId})`,
+      'success'
+    );
+    console.log(
+      `[services-monitor][run ${runId}] verified cstore round-trip for run:${slotKey}`
     );
 
     ensureActive();
@@ -328,4 +372,4 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
   }
 }
 
-module.exports = { handleRunRequest };
+module.exports = { handleRunRequest, verifyBroadcastRoundTrip };
