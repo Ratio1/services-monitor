@@ -2,6 +2,7 @@ const { maybeSign } = require('./signing');
 const { createTestFile, readR1fsPayload } = require('./utils');
 const { shortId } = require('./utils');
 const { safeParseJson } = require('./utils');
+const { uploadBufferToR1fs } = require('./runSupport');
 
 function startPeerWorker({ sdk, config }) {
   const state = { handledRuns: new Map(), polling: false };
@@ -141,10 +142,10 @@ async function handlePeerJob({ sdk, config, runPayload }) {
   try {
     const { buffer, preview: revPreview } = createTestFile(shortId());
     const uploadStart = Date.now();
-    const uploadRes = await sdk.r1fs.addFile({
-      file: buffer,
+    const uploadRes = await uploadBufferToR1fs({
+      sdk,
+      buffer,
       filename: `peer-${config.hostAddr}-${runId}.txt`,
-      contentType: 'text/plain'
     });
     reverseCid = uploadRes.cid;
     reverseUploadMs = Date.now() - uploadStart;

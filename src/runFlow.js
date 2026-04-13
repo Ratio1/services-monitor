@@ -10,7 +10,7 @@ const {
   writeChunk
 } = require('./utils');
 const { maybeSign } = require('./signing');
-const { waitForPeerData, cleanupArtifacts } = require('./runSupport');
+const { waitForPeerData, cleanupArtifacts, uploadBufferToR1fs } = require('./runSupport');
 
 async function verifyBroadcastRoundTrip({ sdk, config, broadcastPayload }) {
   const key = `run:${broadcastPayload.slotKey}`;
@@ -105,10 +105,10 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     console.log(`[services-monitor][run ${runId}] created test file (seed ${testSeed})`);
 
     const uploadStart = Date.now();
-    const uploadRes = await sdk.r1fs.addFile({
-      file: buffer,
+    const uploadRes = await uploadBufferToR1fs({
+      sdk,
+      buffer,
       filename: `services-monitor-${runId}.txt`,
-      contentType: 'text/plain'
     });
     const uploadMs = Date.now() - uploadStart;
     initiatorCid = uploadRes.cid;

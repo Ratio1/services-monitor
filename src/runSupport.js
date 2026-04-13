@@ -1,6 +1,15 @@
 const { sleep } = require('./utils');
 const { safeParseJson } = require('./utils');
 
+async function uploadBufferToR1fs({ sdk, buffer, filename, secret, nonce }) {
+  return await sdk.r1fs.addFileBase64({
+    file_base64_str: buffer.toString('base64'),
+    filename,
+    ...(secret ? { secret } : {}),
+    ...(nonce !== undefined ? { nonce } : {})
+  });
+}
+
 async function waitForPeerData(
   sdk,
   runId,
@@ -76,4 +85,4 @@ async function cleanupArtifacts(sdk, config, cids, slotKey, runId) {
   }
 }
 
-module.exports = { waitForPeerData, cleanupArtifacts };
+module.exports = { waitForPeerData, cleanupArtifacts, uploadBufferToR1fs };
