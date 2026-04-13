@@ -1,13 +1,27 @@
 const { sleep } = require('./utils');
 const { safeParseJson } = require('./utils');
 
+function shouldRetryR1fsUpload(err) {
+  const message = String(err?.message || '');
+  const causeMessage = String(err?.cause?.message || '');
+  return message.includes('fetch failed') || causeMessage.includes('EPIPE');
+}
+
 async function uploadBufferToR1fs({ sdk, buffer, filename, secret, nonce }) {
-  return await sdk.r1fs.addFileBase64({
+  const payload = {
     file_base64_str: buffer.toString('base64'),
     filename,
     ...(secret ? { secret } : {}),
     ...(nonce !== undefined ? { nonce } : {})
-  });
+  };
+
+  try {
+    return await sdk.r1fs.addFileBase64(payload);
+  } catch (err) {
+    if (!shouldRetryR1fsUpload(err)) throw err;
+    await sleep(250);
+    return await sdk.r1fs.addFileBase64(payload);
+  }
 }
 
 async function waitForPeerData(
