@@ -8,7 +8,10 @@ function shouldRetryR1fsUpload(err) {
   return (
     message.includes('fetch failed') ||
     message.includes('EPIPE') ||
+    message.includes('socket hang up') ||
     causeMessage.includes('EPIPE') ||
+    causeMessage.includes('socket hang up') ||
+    code === 'ECONNRESET' ||
     code === 'EPIPE'
   );
 }

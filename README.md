@@ -151,6 +151,7 @@ In test mode:
 In live mode the app talks to the real local edge APIs exposed to the worker container:
 
 - R1FS uploads use normal SDK multipart `addFile()`
+- the app retries a single transient upload reset such as `EPIPE`, `ECONNRESET`, or `socket hang up`
 - CStore writes use `hset()` / `hget()` / `hgetall()`
 - peer coordination happens through the shared `services-monitor` HSET
 

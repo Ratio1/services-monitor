@@ -73,6 +73,33 @@ test('uploadBufferToR1fs retries once when EPIPE is present in the top-level err
   assert.equal(calls, 2);
 });
 
+test('uploadBufferToR1fs retries once when the transport resets with socket hang up', async () => {
+  let calls = 0;
+
+  const result = await uploadBufferToR1fs({
+    sdk: {
+      r1fs: {
+        addFile: async () => {
+          calls += 1;
+          if (calls === 1) {
+            const err = new Error(
+              'request to http://172.17.0.2:31235/add_file failed, reason: socket hang up'
+            );
+            err.code = 'ECONNRESET';
+            throw err;
+          }
+          return { cid: 'cid-reset' };
+        }
+      }
+    },
+    buffer: Buffer.from('retry'),
+    filename: 'retry.txt'
+  });
+
+  assert.equal(result.cid, 'cid-reset');
+  assert.equal(calls, 2);
+});
+
 test('uploadBufferToR1fs does not retry non-transport errors', async () => {
   let calls = 0;
 
