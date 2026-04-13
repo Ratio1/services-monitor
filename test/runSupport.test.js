@@ -50,6 +50,29 @@ test('uploadBufferToR1fs retries once after a transport-level fetch failure', as
   assert.equal(calls, 2);
 });
 
+test('uploadBufferToR1fs retries once when EPIPE is present in the top-level error message', async () => {
+  let calls = 0;
+
+  const result = await uploadBufferToR1fs({
+    sdk: {
+      r1fs: {
+        addFile: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw new Error('request to http://172.17.0.2:31235/add_file failed, reason: write EPIPE');
+          }
+          return { cid: 'cid-epipe' };
+        }
+      }
+    },
+    buffer: Buffer.from('retry'),
+    filename: 'retry.txt'
+  });
+
+  assert.equal(result.cid, 'cid-epipe');
+  assert.equal(calls, 2);
+});
+
 test('uploadBufferToR1fs does not retry non-transport errors', async () => {
   let calls = 0;
 

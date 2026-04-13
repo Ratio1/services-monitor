@@ -4,7 +4,13 @@ const { safeParseJson } = require('./utils');
 function shouldRetryR1fsUpload(err) {
   const message = String(err?.message || '');
   const causeMessage = String(err?.cause?.message || '');
-  return message.includes('fetch failed') || causeMessage.includes('EPIPE');
+  const code = String(err?.code || err?.cause?.code || '');
+  return (
+    message.includes('fetch failed') ||
+    message.includes('EPIPE') ||
+    causeMessage.includes('EPIPE') ||
+    code === 'EPIPE'
+  );
 }
 
 async function uploadBufferToR1fs({ sdk, buffer, filename, secret, nonce }) {
