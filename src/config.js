@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 const REQUIRED_ENV = ['EE_CHAINSTORE_API_URL', 'EE_R1FS_API_URL', 'R1EN_HOST_ADDR', 'R1EN_CHAINSTORE_PEERS'];
 
 function loadConfig() {
@@ -13,6 +16,9 @@ function loadConfig() {
   const testMode = forceTest || missingRequired;
 
   const hostAddr = testMode ? 'initiator-local' : process.env.R1EN_HOST_ADDR;
+  const hostAlias = testMode
+    ? 'initiator-local'
+    : process.env.R1EN_HOST_ID || process.env.EE_HOST_ID || process.env.R1EN_HOST_ADDR;
   const peersRaw = testMode ? null : process.env.R1EN_CHAINSTORE_PEERS;
   const peers = parsePeers(peersRaw, hostAddr, testMode);
 
@@ -21,10 +27,12 @@ function loadConfig() {
     adminUser,
     adminPass,
     hostAddr,
+    hostAlias,
     listenHost,
     peers,
     hkey,
     pepper: monitorPepper,
+    version: readPackageVersion(),
     timeouts: {
       ackMs: 15_000,
       downloadMs: 45_000,
@@ -55,6 +63,15 @@ function parsePeers(raw, hostAddr, testMode) {
 
 function normalize(value) {
   return String(value || '').replace(/\/+$/, '');
+}
+
+function readPackageVersion() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8');
+    return JSON.parse(raw).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
 module.exports = { loadConfig, REQUIRED_ENV };

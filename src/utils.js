@@ -30,7 +30,7 @@ const buildHtmlPreamble = () =>
   '<!doctype html><html><head><meta charset="utf-8">' +
   '<title>Services Monitor</title>' +
   '<style>body{margin:0;padding:16px;background:#0d1117;color:#d1d5db;font-family:SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:14px;line-height:1.5;}' +
-  '.line{margin:0 0 8px 0;}.muted{color:#9ca3af;}.error{color:#f87171;}.success{color:#34d399;}.step{color:#93c5fd;}.payload{display:none;white-space:pre-wrap;word-break:break-word;}' +
+  '.line{margin:0 0 8px 0;}.muted{color:#9ca3af;}.error{color:#f87171;}.success{color:#34d399;}.step{color:#93c5fd;}' +
   '</style></head><body><div id="log">';
 
 const buildHtmlFooter = () => '</div></body></html>';

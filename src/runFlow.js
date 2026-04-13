@@ -12,6 +12,26 @@ const {
 const { maybeSign } = require('./signing');
 const { waitForPeerData, cleanupArtifacts, uploadBufferToR1fs } = require('./runSupport');
 
+function formatNodeDisplay({ alias, addr }) {
+  if (alias && addr) {
+    return `'${alias}' <${addr}>`;
+  }
+  return alias || addr || 'unknown-node';
+}
+
+function renderStartLine({ version, hostAlias, hostAddr, slotId, runId }) {
+  return `Services Monitor v${version} started on ${formatNodeDisplay({
+    alias: hostAlias,
+    addr: hostAddr
+  })} (slot ${slotId}, run ${runId})`;
+}
+
+function renderPeerTransferLine({ peerAlias, peer, fileCid }) {
+  return `<div class="line muted">Streaming payload from ${escapeHtml(
+    formatNodeDisplay({ alias: peerAlias, addr: peer })
+  )} (${escapeHtml(fileCid)}) to browser…</div>`;
+}
+
 async function verifyBroadcastRoundTrip({ sdk, config, broadcastPayload }) {
   const key = `run:${broadcastPayload.slotKey}`;
   const raw = await sdk.cstore.hget({
@@ -77,13 +97,22 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
 
     ensureActive();
     console.log(
-      `[services-monitor][run ${runId}] started on ${config.hostAddr} slot ${slotId} with peers: ${
+      `[services-monitor][run ${runId}] started on ${formatNodeDisplay({
+        alias: config.hostAlias,
+        addr: config.hostAddr
+      })} slot ${slotId} with peers: ${
         config.peers.join(', ') || 'none'
       }`
     );
     await logChunk(
       res,
-      `Services Monitor started on ${config.hostAddr} (slot ${slotId}, run ${runId})`,
+      renderStartLine({
+        version: config.version,
+        hostAlias: config.hostAlias,
+        hostAddr: config.hostAddr,
+        slotId,
+        runId
+      }),
       'step'
     );
     if (runSignature) {
@@ -182,21 +211,22 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     );
     for (const ack of acks) {
       ensureActive();
+      const peerDisplay = formatNodeDisplay({ alias: ack.peerAlias, addr: ack.peer });
       if (ack.missing) {
         console.warn(`[services-monitor][run ${runId}] peer ${ack.peer} missing ack`);
         await logChunk(
           res,
-          `Peer ${ack.peer} did not acknowledge within ${formatMs(config.timeouts.ackMs)}`,
+          `Peer ${peerDisplay} did not acknowledge within ${formatMs(config.timeouts.ackMs)}`,
           'error'
         );
         continue;
       }
       console.log(
-        `[services-monitor][run ${runId}] peer ${ack.peer} acked in ${ack.ackLatencyMs}ms`
+        `[services-monitor][run ${runId}] peer ${peerDisplay} acked in ${ack.ackLatencyMs}ms`
       );
       await logChunk(
         res,
-        `Peer ${ack.peer} responded to CStore message in ${formatMs(ack.ackLatencyMs ?? 0)}`,
+        `Peer ${peerDisplay} responded to CStore message in ${formatMs(ack.ackLatencyMs ?? 0)}`,
         ack.error ? 'error' : 'muted'
       );
     }
@@ -219,13 +249,14 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     );
     for (const pd of peerDownloads) {
       ensureActive();
+      const peerDisplay = formatNodeDisplay({ alias: pd.peerAlias, addr: pd.peer });
       if (pd.missing) {
         console.warn(
           `[services-monitor][run ${runId}] peer ${pd.peer} missing download metrics within timeout`
         );
         await logChunk(
           res,
-          `Peer ${pd.peer} did not report download metrics within ${formatMs(
+          `Peer ${peerDisplay} did not report download metrics within ${formatMs(
             config.timeouts.downloadMs
           )}`,
           'error'
@@ -236,17 +267,17 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         console.warn(`[services-monitor][run ${runId}] peer ${pd.peer} reported download error`, pd.error);
         await logChunk(
           res,
-          `Peer ${pd.peer} reported an error while downloading: ${pd.error}`,
+          `Peer ${peerDisplay} reported an error while downloading: ${pd.error}`,
           'error'
         );
         continue;
       }
       console.log(
-        `[services-monitor][run ${runId}] peer ${pd.peer} download=${pd.downloadMs}ms stream=${pd.streamMs}ms`
+        `[services-monitor][run ${runId}] peer ${peerDisplay} download=${pd.downloadMs}ms stream=${pd.streamMs}ms`
       );
       await logChunk(
         res,
-        `Peer ${pd.peer}: downloaded in ${formatMs(
+        `Peer ${peerDisplay}: downloaded in ${formatMs(
           pd.downloadMs ?? 0
         )}, streamed to Node.js in ${formatMs(pd.streamMs ?? 0)} (preview: "${pd.preview || 'n/a'}")`,
         'muted'
@@ -272,6 +303,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
 
     for (const reverse of reverseAnnouncements) {
       ensureActive();
+      const peerDisplay = formatNodeDisplay({ alias: reverse.peerAlias, addr: reverse.peer });
 
       if (reverse.missing) {
         console.warn(
@@ -279,7 +311,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         );
         await logChunk(
           res,
-          `Peer ${reverse.peer} did not post reverse file within ${formatMs(
+          `Peer ${peerDisplay} did not post reverse file within ${formatMs(
             config.timeouts.reverseMs
           )}`,
           'error'
@@ -292,19 +324,19 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         );
         await logChunk(
           res,
-          `Peer ${reverse.peer} reverse upload failed: ${reverse.error || 'no cid provided'}`,
+          `Peer ${peerDisplay} reverse upload failed: ${reverse.error || 'no cid provided'}`,
           'error'
         );
         continue;
       }
 
       console.log(
-        `[services-monitor][run ${runId}] reverse file from ${reverse.peer} cid=${reverse.fileCid} uploaded in ${reverse.uploadMs}ms`
+        `[services-monitor][run ${runId}] reverse file from ${peerDisplay} cid=${reverse.fileCid} uploaded in ${reverse.uploadMs}ms`
       );
       const metadataLatency = reverse.uploadedAt ? Date.now() - reverse.uploadedAt : null;
       await logChunk(
         res,
-        `Reverse file announced by ${reverse.peer} (metadata latency: ${
+        `Reverse file announced by ${peerDisplay} (metadata latency: ${
           metadataLatency ? formatMs(metadataLatency) : 'n/a'
         })`,
         'muted'
@@ -320,28 +352,24 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       const browserSendStart = Date.now();
       await writeChunk(
         res,
-        `<div class="line muted">Streaming payload from ${escapeHtml(
-          reverse.peer
-        )} (${reverse.fileCid}) to browser…</div>`
-      );
-      await writeChunk(
-        res,
-        `<pre class="payload" data-peer="${escapeHtml(reverse.peer)}">${escapeHtml(
-          payload.buffer.toString('utf8')
-        )}</pre>`
+        renderPeerTransferLine({
+          peerAlias: reverse.peerAlias,
+          peer: reverse.peer,
+          fileCid: reverse.fileCid
+        })
       );
       const browserSendMs = Date.now() - browserSendStart;
 
       peerFileCids.push(reverse.fileCid);
 
       console.log(
-        `[services-monitor][run ${runId}] received reverse from ${reverse.peer} fetch=${fetchMs}ms stream=${serverStreamMs}ms browser=${browserSendMs}ms`
+        `[services-monitor][run ${runId}] received reverse from ${peerDisplay} fetch=${fetchMs}ms stream=${serverStreamMs}ms response=${browserSendMs}ms`
       );
       await logChunk(
         res,
-        `Received file from ${reverse.peer} – download: ${formatMs(
+        `Received file from ${peerDisplay} – download: ${formatMs(
           fetchMs
-        )}, stream: ${formatMs(serverStreamMs ?? 0)}, browser transfer: ${formatMs(
+        )}, stream: ${formatMs(serverStreamMs ?? 0)}, response write: ${formatMs(
           browserSendMs
         )}. Preview: "${preview50}"`,
         'success'
@@ -372,4 +400,10 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
   }
 }
 
-module.exports = { handleRunRequest, verifyBroadcastRoundTrip };
+module.exports = {
+  formatNodeDisplay,
+  handleRunRequest,
+  renderPeerTransferLine,
+  renderStartLine,
+  verifyBroadcastRoundTrip
+};

@@ -11,6 +11,7 @@ startPeerWorker({ sdk, config });
 
 const MAX_ACTIVE_RUNS = 4;
 const availableSlots = new Set(Array.from({ length: MAX_ACTIVE_RUNS }, (_, i) => i + 1));
+const nodeDisplay = `'${config.hostAlias}' <${config.hostAddr}>`;
 
 const server = http.createServer(async (req, res) => {
   if (req.url !== '/' || req.method !== 'GET') {
@@ -24,7 +25,7 @@ const server = http.createServer(async (req, res) => {
   const slotId = [...availableSlots][0];
   if (!slotId) {
     console.warn(
-      `[services-monitor] reject run due to slot limit (${MAX_ACTIVE_RUNS}) on ${config.hostAddr}`
+      `[services-monitor] reject run due to slot limit (${MAX_ACTIVE_RUNS}) on ${nodeDisplay}`
     );
     res.writeHead(429, { 'Content-Type': 'text/plain' });
     res.end('Too many concurrent runs on this node (max 4). Please retry shortly.');
@@ -34,7 +35,7 @@ const server = http.createServer(async (req, res) => {
   availableSlots.delete(slotId);
   const activeRuns = MAX_ACTIVE_RUNS - availableSlots.size;
   console.log(
-    `[services-monitor] accepting run in slot ${slotId}; active slots ${activeRuns}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+    `[services-monitor] accepting run in slot ${slotId}; active slots ${activeRuns}/${MAX_ACTIVE_RUNS} on ${nodeDisplay} (v${config.version})`
   );
   try {
     await handleRunRequest(req, res, { sdk, config, slotId });
@@ -42,14 +43,14 @@ const server = http.createServer(async (req, res) => {
     availableSlots.add(slotId);
     const remaining = MAX_ACTIVE_RUNS - availableSlots.size;
     console.log(
-      `[services-monitor] run ended in slot ${slotId}; active slots ${remaining}/${MAX_ACTIVE_RUNS} on ${config.hostAddr}`
+      `[services-monitor] run ended in slot ${slotId}; active slots ${remaining}/${MAX_ACTIVE_RUNS} on ${nodeDisplay}`
     );
   }
 });
 
 server.listen(config.port, config.listenHost, () => {
   console.log(
-    `[services-monitor] listening on ${config.listenHost}:${config.port} as ${config.hostAddr} (${mode} mode) with peers: ${
+    `[services-monitor] v${config.version} listening on ${config.listenHost}:${config.port} as ${nodeDisplay} (${mode} mode) with peers: ${
       config.peers.join(', ') || 'none'
     }`
   );

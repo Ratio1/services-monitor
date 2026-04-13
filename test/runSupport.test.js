@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 
 const { uploadBufferToR1fs } = require('../src/runSupport');
 
-test('uploadBufferToR1fs uploads buffers through addFileBase64', async () => {
+test('uploadBufferToR1fs uploads buffers through addFile', async () => {
   let seenPayload = null;
 
   const result = await uploadBufferToR1fs({
     sdk: {
       r1fs: {
-        addFileBase64: async (payload) => {
+        addFile: async (payload) => {
           seenPayload = payload;
           return { cid: 'cid-1' };
         }
@@ -20,10 +20,9 @@ test('uploadBufferToR1fs uploads buffers through addFileBase64', async () => {
   });
 
   assert.equal(result.cid, 'cid-1');
-  assert.deepEqual(seenPayload, {
-    file_base64_str: Buffer.from('abc').toString('base64'),
-    filename: 'test.txt'
-  });
+  assert.equal(seenPayload.filename, 'test.txt');
+  assert.equal(Buffer.isBuffer(seenPayload.file), true);
+  assert.equal(seenPayload.file.toString('utf8'), 'abc');
 });
 
 test('uploadBufferToR1fs retries once after a transport-level fetch failure', async () => {
@@ -32,7 +31,7 @@ test('uploadBufferToR1fs retries once after a transport-level fetch failure', as
   const result = await uploadBufferToR1fs({
     sdk: {
       r1fs: {
-        addFileBase64: async () => {
+        addFile: async () => {
           calls += 1;
           if (calls === 1) {
             const err = new TypeError('fetch failed');
@@ -59,7 +58,7 @@ test('uploadBufferToR1fs does not retry non-transport errors', async () => {
       uploadBufferToR1fs({
         sdk: {
           r1fs: {
-            addFileBase64: async () => {
+            addFile: async () => {
               calls += 1;
               throw new Error('Request failed with status 400');
             }

@@ -41,7 +41,7 @@ async function scanForRuns({ sdk, config, state }) {
     state.handledRuns.set(payload.runId, payload.expiresAt || now + config.timeouts.overallMs);
     if (config.testMode) {
       for (const peer of config.peers) {
-        const peerConfig = { ...config, hostAddr: peer };
+        const peerConfig = { ...config, hostAddr: peer, hostAlias: peer };
         handlePeerJob({ sdk, config: peerConfig, runPayload: payload }).catch((err) =>
           console.error('[services-monitor] peer job failed', payload.runId, err?.message)
         );
@@ -69,6 +69,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
   const ackPayload = {
     runId,
     peer: config.hostAddr,
+    peerAlias: config.hostAlias,
     initiator,
     slotKey,
     ackedAt,
@@ -112,6 +113,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
   const peerResult = {
     runId,
     peer: config.hostAddr,
+    peerAlias: config.hostAlias,
     initiator,
     slotKey,
     fileCid,
@@ -163,6 +165,7 @@ async function handlePeerJob({ sdk, config, runPayload }) {
   const reversePayload = {
     runId,
     peer: config.hostAddr,
+    peerAlias: config.hostAlias,
     initiator,
     slotKey,
     fileCid: reverseCid,

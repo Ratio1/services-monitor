@@ -1,72 +1,171 @@
 # Services Monitor
 
-A single-page, authenticated dashboard that exercises Ratio1’s distributed storage (R1FS) and state fabric (CStore) across a cluster of edge nodes, while streaming every step and timing to your browser.
+`services-monitor` is a small authenticated Worker App Runner application for validating live Ratio1 storage behavior across multiple edge nodes.
+
+It is meant to answer a narrow operational question:
+
+- can one node upload a test file to R1FS
+- announce it through CStore
+- have peers acknowledge and download it
+- have peers upload their own reverse files
+- and have the initiator verify the reverse leg and cleanup
+
+The app is intentionally simple, streamed, and ephemeral. Every authenticated request creates a fresh run and removes its test artifacts at the end.
 
 ## Objectives
 
-A. Test the speed at which a 1 MB file is downloaded via R1FS to a node, then the speed at which that node can stream it to a nodejs app running on it then to the browser.
-B. Test the speed at which a CStore message is posted and read across multiple nodes.
-C. Provide a minimalistic, easily extensible Node.js app that can be deployed as a WorkerAppRunner on multiple Ratio1 nodes.
-D. Authenticate access using HTTP Basic Auth with credentials injected via environment variables.
-E. Ensure all operations are ephemeral: no files are saved to disk, and all test artifacts are cleaned up after each run.
+- Validate end-to-end R1FS behavior using the normal multipart SDK upload path.
+- Validate CStore propagation and immediate round-trip reads for a shared HSET.
+- Show per-step timings and node identity so live cluster behavior is easy to inspect.
+- Provide a small Node.js app that is easy to deploy on multiple edge nodes through Worker App Runner.
+- Keep the test ephemeral: no persistent browser files, no intended permanent R1FS artifacts, and CStore keys overwritten during cleanup.
 
-## What it does
-- Detects the current node and its peers, then runs an end-to-end performance test for this session only.
-- Uploads a 1 MB test file from the initiator node to R1FS, notifies peers via CStore, and measures how fast peers react and download.
-- Collects peer download timings, then asks each peer to upload its own 1 MB file; the initiator fetches each peer file and streams it to your browser.
-- Shows inline previews (first ~50 chars) of each transferred file so you can verify correctness without saving anything.
-- Cleans up at the end: deletes test artifacts from R1FS and removes test data from the `services-monitor` hash in CStore.
+## What It Tests
 
-## How to access
-- Open the app’s URL in your browser; you will see an HTTP Basic Auth prompt.
-- Credentials: use the injected `ADMIN_USER` / `ADMIN_PASS`. If not set, defaults are `admin` / `r@t100ne-monitor`.
-- Each authenticated request triggers its own run; multiple users can run tests in parallel.
+For each authenticated request, one node becomes the initiator for that run:
 
-## Running locally (two modes)
+1. It creates a ~1 MB in-memory text file.
+2. It uploads that file to R1FS using the standard SDK `addFile()` multipart path.
+3. It posts a CStore broadcast in the `services-monitor` HSET.
+4. It immediately verifies that broadcast with a local CStore round-trip read.
+5. Peer nodes observe the broadcast, acknowledge it through CStore, and download the initiator file.
+6. Each peer uploads its own reverse file to R1FS and posts its CID back through CStore.
+7. The initiator fetches each reverse file, reports timings, and shows a short preview in the streamed response.
+8. The initiator deletes the created R1FS artifacts and overwrites the run-specific CStore keys with cleanup markers.
 
-### 1) Test mode (no real Ratio1 services)
-If the required env vars are missing (`EE_CHAINSTORE_API_URL`, `EE_R1FS_API_URL`, `R1EN_HOST_ADDR`, `R1EN_CHAINSTORE_PEERS`), the app auto-switches to **test mode** using an in-memory mock for CStore and R1FS plus simulated peers.
+The browser output shows status lines, timings, CIDs, and previews. It does not send the full reverse file payload to the browser.
 
-Commands:
-- Install deps: `npm install`
-- Start (auto test mode): `npm start`
-- Force test mode even with envs present: `SERVICES_MONITOR_TEST=1 npm start`
+## Access
 
-What happens: the initiator runs end-to-end, peers are simulated in-process, and logs/metrics mirror the live flow without external services.
+Live devnet entrypoint:
 
-### 2) Live mode (real Ratio1 services)
-- Install deps: `npm install`
-- Export endpoints: `EE_CHAINSTORE_API_URL`, `EE_R1FS_API_URL`
-- Identify node and peers: `R1EN_HOST_ADDR`, `R1EN_CHAINSTORE_PEERS` (JSON array, the current host is ignored if present)
-- Optional: `SERVICES_MONITOR_PEPPER` to seed signatures
-- Start: `npm start` (uses `PORT` if provided, default 3000)
+- `https://devnet-services-monitor.ratio1.link/`
 
-## What you will see
-- A plain text log that streams live (chunked HTTP or SSE). No additional UI is required.
-- Clear messages per step: peers detected, file uploads/downloads, CStore notifications, peer acknowledgments, timing numbers, and content previews.
-- The heaviest section is when the initiator downloads each peer’s file and streams it to your browser.
+Legacy or migration tunnel aliases may still exist temporarily, but the devnet alias above is the canonical public URL.
 
-## Test flow (sequential summary)
-1) Identify peers from the environment; display all peers including the initiator.  
-2) Create a unique ~1 MB file ("Ratio1 is the best <RANDOM_4_CHARS>! " repeated until required size) and upload to R1FS; log upload time and file ID.  
-3) Notify peers via CStore (`hset` on `services-monitor` hash using R1EN_HOST_ADDR as key); log metadata post time.  
-4) Peers will monitorr `services-monitor` and will find available "finished=False" testing job. Wait for peer acknowledgments; log per-peer latency.  
-5) Peers download the initiator’s file; they report download and stream timings via CStore; initiator logs each.  
-6) Each peer uploads its own ~1 MB file to R1FS and posts its CID in CStore for the initiator.  
-7) Initiator fetches each peer file (sequential by default), streams it to your browser, logs three timings (fetch, server stream, browser transfer), and shows a 50-char preview.  
-8) Wrap up: summarize completion, then delete test files and clear the `services-monitor` hash.
+The app uses HTTP Basic Auth:
 
-## Timings and timeouts
-- Peer acknowledgments and metrics: up to ~15s per peer before marking as missing.
-- R1FS uploads/downloads/streams: allow ~30–45s per 1 MB transfer.
-- Overall run cap: ~2–3 minutes per request/session to avoid stuck pages.
+- username: `ADMIN_USER`
+- password: `ADMIN_PASS`
 
-## Data handling and privacy
-- No files are saved on disk in the browser or on the node; all handling is in memory.
-- All artifacts are removed from R1FS and CStore after the run.
+If those are not injected, the app falls back to:
 
-## Requirements (operational)
-- Latest stable Node.js runtime with only the built-in `http` server.
-- Ratio1 SDK environment vars for endpoints available inside the host (`EE_CHAINSTORE_API_URL`, `EE_R1FS_API_URL`). Endpoints are internal; no extra tokens are required.
+- username: `admin`
+- password: `r@t100ne-monitor`
 
-If something looks off (missing peers, stalled step, or slow timings), refresh and re-run; each visit is isolated and produces a fresh log.***
+Every successful authenticated request starts a new isolated run.
+
+## Streamed Output
+
+The response is a streamed HTML log. It includes:
+
+- app version
+- initiator identity rendered as `'alias' <address>`
+- raw peer detection information from `R1EN_CHAINSTORE_PEERS`
+- CStore verification status
+- per-peer acknowledgment timing
+- per-peer download timing
+- reverse-upload announcements
+- reverse-file fetch timing and short previews
+- cleanup result
+
+Example start line:
+
+```text
+Services Monitor v1.0.0 started on 'dr1-thorn-01' <0xai_...> (slot 2, run abc123)
+```
+
+Peer lines use the same alias-plus-address format once peer payloads arrive.
+
+## Runtime Identity And Environment
+
+The app relies on the environment injected by Worker App Runner.
+
+Important variables:
+
+- `EE_CHAINSTORE_API_URL`: local CStore API endpoint
+- `EE_R1FS_API_URL`: local R1FS API endpoint
+- `R1EN_HOST_ADDR`: long node address used as the canonical initiator/peer address
+- `R1EN_HOST_ID`: human-readable edge-node alias used for display
+- `R1EN_CHAINSTORE_PEERS`: JSON array of peer addresses
+- `SERVICES_MONITOR_PEPPER`: optional seed for cstore-auth signing helpers
+- `ADMIN_USER` / `ADMIN_PASS`: optional Basic Auth credentials
+
+Compatibility fallback:
+
+- if `R1EN_HOST_ID` is missing, the app falls back to `EE_HOST_ID`
+
+## Local Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run tests:
+
+```bash
+npm test
+```
+
+Start the app:
+
+```bash
+npm start
+```
+
+The repo also exposes a no-op build script because Worker App Runner currently runs `npm run build` during deployment:
+
+```bash
+npm run build
+```
+
+## Modes
+
+### Test Mode
+
+If the required live env vars are missing, the app automatically falls back to an in-memory test mode.
+
+Required live variables:
+
+- `EE_CHAINSTORE_API_URL`
+- `EE_R1FS_API_URL`
+- `R1EN_HOST_ADDR`
+- `R1EN_CHAINSTORE_PEERS`
+
+You can also force test mode explicitly:
+
+```bash
+SERVICES_MONITOR_TEST=1 npm start
+```
+
+In test mode:
+
+- CStore and R1FS are mocked in-process
+- peers are simulated
+- the app still exercises the same high-level flow
+
+### Live Mode
+
+In live mode the app talks to the real local edge APIs exposed to the worker container:
+
+- R1FS uploads use normal SDK multipart `addFile()`
+- CStore writes use `hset()` / `hget()` / `hgetall()`
+- peer coordination happens through the shared `services-monitor` HSET
+
+## Operational Notes
+
+- The app is designed for diagnostics, not long-term storage.
+- Cleanup is best-effort. Failures are logged, but the run still completes its response.
+- The public ingress can still fail independently of app health. A `502` at the public alias does not automatically mean the worker app is broken.
+- Peer aliases are carried in peer-generated CStore payloads, so the earliest peer-detection line may initially show only addresses from `R1EN_CHAINSTORE_PEERS`.
+
+## Current Behavior Summary
+
+- normal multipart R1FS uploads: yes
+- CStore broadcast round-trip verification: yes
+- alias-plus-address rendering: yes
+- version shown in output: yes
+- full reverse file payload streamed to browser: no
+- artifacts cleaned up at end of run: yes

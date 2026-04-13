@@ -9,18 +9,18 @@ function shouldRetryR1fsUpload(err) {
 
 async function uploadBufferToR1fs({ sdk, buffer, filename, secret, nonce }) {
   const payload = {
-    file_base64_str: buffer.toString('base64'),
+    file: buffer,
     filename,
     ...(secret ? { secret } : {}),
     ...(nonce !== undefined ? { nonce } : {})
   };
 
   try {
-    return await sdk.r1fs.addFileBase64(payload);
+    return await sdk.r1fs.addFile(payload);
   } catch (err) {
     if (!shouldRetryR1fsUpload(err)) throw err;
     await sleep(250);
-    return await sdk.r1fs.addFileBase64(payload);
+    return await sdk.r1fs.addFile(payload);
   }
 }
 
