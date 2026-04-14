@@ -34,6 +34,7 @@ For each authenticated request, one node becomes the initiator for that run:
 8. The initiator deletes the created R1FS artifacts and overwrites the run-specific CStore keys with cleanup markers.
 
 The browser output shows status lines, timings, CIDs, and previews. It does not send the full reverse file payload to the browser.
+Server logs keep the full node addresses for troubleshooting.
 
 ## Access
 
@@ -55,12 +56,14 @@ If those are not injected, the app falls back to:
 
 Every successful authenticated request starts a new isolated run.
 
+The app only serves authenticated `GET /`. A bare `HEAD /` request is expected to return `404` because there is no separate health endpoint.
+
 ## Streamed Output
 
 The response is a streamed HTML log. It includes:
 
 - app version
-- initiator identity rendered as `'alias' <address>`
+- initiator identity rendered as `'alias' <first8...last4>` in browser output
 - raw peer detection information from `R1EN_CHAINSTORE_PEERS`
 - CStore verification status
 - per-peer acknowledgment timing
@@ -72,10 +75,10 @@ The response is a streamed HTML log. It includes:
 Example start line:
 
 ```text
-Services Monitor v1.0.0 started on 'dr1-thorn-01' <0xai_...> (slot 2, run abc123)
+Services Monitor v1.0.1 started on 'dr1-thorn-01' <0xai_1234...abcd> (slot 2, run abc123)
 ```
 
-Peer lines use the same alias-plus-address format once peer payloads arrive.
+Peer lines use the same alias-plus-short-address format once peer payloads arrive in the browser.
 
 ## Runtime Identity And Environment
 
@@ -161,12 +164,15 @@ In live mode the app talks to the real local edge APIs exposed to the worker con
 - Cleanup is best-effort. Failures are logged, but the run still completes its response.
 - The public ingress can still fail independently of app health. A `502` at the public alias does not automatically mean the worker app is broken.
 - Peer aliases are carried in peer-generated CStore payloads, so the earliest peer-detection line may initially show only addresses from `R1EN_CHAINSTORE_PEERS`.
+- Browser streaming shortens displayed node addresses to `<first8...last4>`.
+- Console logs and warnings keep full node addresses.
 
 ## Current Behavior Summary
 
 - normal multipart R1FS uploads: yes
 - CStore broadcast round-trip verification: yes
-- alias-plus-address rendering: yes
+- browser short-address rendering: yes
+- server logs preserve full addresses: yes
 - version shown in output: yes
 - full reverse file payload streamed to browser: no
 - artifacts cleaned up at end of run: yes

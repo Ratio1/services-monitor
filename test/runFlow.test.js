@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 
 const {
   formatNodeDisplay,
+  renderPeerDownloadErrorLine,
   renderPeerTransferLine,
+  renderPeerReceiveLine,
   renderStartLine,
   verifyBroadcastRoundTrip
 } = require('../src/runFlow');
@@ -61,25 +63,72 @@ test('formatNodeDisplay falls back to address when alias is absent', () => {
   assert.equal(formatNodeDisplay({ alias: '', addr: '0xai_abc' }), '0xai_abc');
 });
 
-test('renderStartLine includes app version and formatted node display', () => {
+test('formatNodeDisplay keeps the full address for logs', () => {
+  assert.equal(
+    formatNodeDisplay({ alias: 'dr1-thorn-01', addr: '0x1234567890abcdef' }),
+    "'dr1-thorn-01' <0x1234567890abcdef>"
+  );
+});
+
+test('renderStartLine shortens browser addresses', () => {
   const line = renderStartLine({
     version: '1.0.1',
     hostAlias: 'dr1-thorn-01',
-    hostAddr: '0xai_abc',
+    hostAddr: '0x1234567890abcdef',
     slotId: 2,
     runId: 'run-1'
   });
 
-  assert.match(line, /Services Monitor v1.0.1 started on 'dr1-thorn-01' <0xai_abc> \(slot 2, run run-1\)/);
+  assert.match(line, /Services Monitor v1.0.1 started on 'dr1-thorn-01' <0x123456...cdef> \(slot 2, run run-1\)/);
 });
 
-test('renderPeerTransferLine does not emit hidden payload markup', () => {
+test('renderStartLine keeps angle brackets when browser output has no alias', () => {
+  const line = renderStartLine({
+    version: '1.0.1',
+    hostAlias: '',
+    hostAddr: '0x1234567890abcdef',
+    slotId: 2,
+    runId: 'run-1'
+  });
+
+  assert.match(line, /Services Monitor v1.0.1 started on <0x123456...cdef> \(slot 2, run run-1\)/);
+});
+
+test('renderPeerTransferLine shortens browser addresses without payload markup', () => {
   const line = renderPeerTransferLine({
     peerAlias: 'dr1-thorn-02',
-    peer: '0xai_peer',
+    peer: '0x1234567890abcdef',
     fileCid: 'cid-1'
   });
 
-  assert.match(line, /Streaming payload from &#39;dr1-thorn-02&#39; &lt;0xai_peer&gt; \(cid-1\) to browser…/);
+  assert.match(line, /Streaming payload from &#39;dr1-thorn-02&#39; &lt;0x123456\.\.\.cdef&gt; \(cid-1\) to browser…/);
   assert.doesNotMatch(line, /class="payload"/);
+});
+
+test('renderPeerReceiveLine shortens browser addresses and keeps angle brackets', () => {
+  const line = renderPeerReceiveLine({
+    peerAlias: '',
+    peer: '0x1234567890abcdef',
+    fileCid: 'cid-1',
+    preview: 'hello',
+    fetchMs: 12,
+    serverStreamMs: 34,
+    browserSendMs: 56
+  });
+
+  assert.match(
+    line,
+    /Received file from <0x123456\.\.\.cdef> – download: 0\.01s, stream: 0\.03s, response write: 0\.06s\. Preview: "hello"/
+  );
+  assert.doesNotMatch(line, /class="payload"/);
+});
+
+test('renderPeerDownloadErrorLine shortens browser addresses', () => {
+  const line = renderPeerDownloadErrorLine({
+    peerAlias: 'dr1-thorn-03',
+    peer: '0x1234567890abcdef',
+    error: 'boom'
+  });
+
+  assert.match(line, /Peer 'dr1-thorn-03' <0x123456\.\.\.cdef> reported an error while downloading: boom/);
 });

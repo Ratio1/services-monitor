@@ -1,6 +1,6 @@
 {
   "name": "services-monitor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A single-page, authenticated dashboard that exercises Ratio1’s distributed storage (R1FS) and state fabric (CStore) across a cluster of edge nodes, while streaming every step and timing to your browser.",
   "main": "server.js",
   "scripts": {
