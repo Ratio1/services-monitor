@@ -24,7 +24,7 @@ The app is intentionally simple, streamed, and ephemeral. Every authenticated re
 
 For each authenticated request, one node becomes the initiator for that run:
 
-1. It creates a ~1 MB in-memory text file.
+1. It creates an exact 1 MiB in-memory text file.
 2. It uploads that file to R1FS using the standard SDK `addFile()` multipart path.
 3. It posts a CStore broadcast in the `services-monitor` HSET.
 4. It immediately verifies that broadcast with a local CStore round-trip read.
@@ -49,7 +49,7 @@ The app uses HTTP Basic Auth:
 - username: `ADMIN_USER`
 - password: `ADMIN_PASS`
 
-If those are not injected, the app falls back to:
+If those are not injected, the app falls back to dev environment credentials:
 
 - username: `admin`
 - password: `r@t100ne-monitor`
@@ -63,6 +63,7 @@ The app only serves authenticated `GET /`. A bare `HEAD /` request is expected t
 The response is a streamed HTML log. It includes:
 
 - app version
+- an immediate bootstrap line so the browser has visible output before uploads and peer waits begin
 - initiator identity rendered as `'alias' <first8...last4>` in browser output
 - raw peer detection information from `R1EN_CHAINSTORE_PEERS`
 - CStore verification status
@@ -75,10 +76,11 @@ The response is a streamed HTML log. It includes:
 Example start line:
 
 ```text
-Services Monitor v1.0.1 started on 'dr1-thorn-01' <0xai_1234...abcd> (slot 2, run abc123)
+Services Monitor v1.0.2 started on 'dr1-thorn-01' <0xai_1234...abcd> (slot 2, run abc123)
 ```
 
 Peer lines use the same alias-plus-short-address format once peer payloads arrive in the browser.
+The first streamed response chunk is intentionally padded so common ingress/browser buffering does not leave the page blank while the run warms up.
 
 ## Runtime Identity And Environment
 
@@ -163,15 +165,20 @@ In live mode the app talks to the real local edge APIs exposed to the worker con
 - The app is designed for diagnostics, not long-term storage.
 - Cleanup is best-effort. Failures are logged, but the run still completes its response.
 - The public ingress can still fail independently of app health. A `502` at the public alias does not automatically mean the worker app is broken.
+- The first streamed chunk is padded to 4 KiB and headers disable proxy buffering where supported, which reduces blank-page delays before the first visible browser line.
 - Peer aliases are carried in peer-generated CStore payloads, so the earliest peer-detection line may initially show only addresses from `R1EN_CHAINSTORE_PEERS`.
 - Browser streaming shortens displayed node addresses to `<first8...last4>`.
+- Client disconnects abort the run and cleanup without attempting additional writes to the destroyed response stream.
 - Console logs and warnings keep full node addresses.
 
 ## Current Behavior Summary
 
 - normal multipart R1FS uploads: yes
 - CStore broadcast round-trip verification: yes
+- exact 1 MiB test payload generation: yes
+- bootstrap chunk sized for fast first paint: yes
 - browser short-address rendering: yes
+- disconnect-safe streamed error handling: yes
 - server logs preserve full addresses: yes
 - version shown in output: yes
 - full reverse file payload streamed to browser: no

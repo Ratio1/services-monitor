@@ -1,8 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 const {
+  INITIAL_STREAM_MIN_BYTES,
+  buildInitialResponseChunk,
   formatNodeDisplay,
+  handleRunRequest,
   renderPeerDownloadErrorLine,
   renderPeerTransferLine,
   renderPeerReceiveLine,
@@ -132,3 +136,114 @@ test('renderPeerDownloadErrorLine shortens browser addresses', () => {
 
   assert.match(line, /Peer 'dr1-thorn-03' <0x123456\.\.\.cdef> reported an error while downloading: boom/);
 });
+
+test('buildInitialResponseChunk includes visible start output and exceeds the bootstrap threshold', () => {
+  const chunk = buildInitialResponseChunk({
+    version: '1.0.2',
+    hostAlias: 'dr1-thorn-01',
+    hostAddr: '0x1234567890abcdef',
+    slotId: 2,
+    runId: 'run-1'
+  });
+
+  assert.match(chunk, /<!doctype html>/);
+  assert.match(
+    chunk,
+    /Services Monitor v1\.0\.2 started on &#39;dr1-thorn-01&#39; &lt;0x123456\.\.\.cdef&gt; \(slot 2, run run-1\)/
+  );
+  assert.match(chunk, /Preparing run context and live checks/);
+  assert.ok(Buffer.byteLength(chunk) >= INITIAL_STREAM_MIN_BYTES);
+});
+
+test('handleRunRequest avoids writing an error line after the client disconnects', async () => {
+  const req = new EventEmitter();
+  const res = createFakeResponse();
+  let clearedKeys = 0;
+
+  const sdk = {
+    cstore: {
+      hset: async () => {
+        clearedKeys += 1;
+        return true;
+      },
+      hget: async () => null,
+      hgetall: async () => ({})
+    },
+    r1fs: {
+      addFile: async () => {
+        res.destroyed = true;
+        req.emit('close');
+        throw new Error('upload failed');
+      },
+      deleteFiles: async () => ({ success: [], failed: [], total: 0 })
+    }
+  };
+
+  const config = {
+    version: '1.0.2',
+    hostAlias: 'dr1-thorn-01',
+    hostAddr: '0x1234567890abcdef',
+    peers: [],
+    hkey: 'services-monitor',
+    pepper: 'services-monitor',
+    timeouts: {
+      ackMs: 10,
+      downloadMs: 10,
+      reverseMs: 10,
+      overallMs: 1_000
+    }
+  };
+
+  await assert.doesNotReject(() => handleRunRequest(req, res, { sdk, config, slotId: 1 }));
+  assert.equal(res.chunks.some((chunk) => chunk.includes('Run failed: upload failed')), false);
+  assert.ok(clearedKeys >= 1);
+});
+
+function createFakeResponse() {
+  return {
+    chunks: [],
+    destroyed: false,
+    writableEnded: false,
+    headersFlushed: false,
+    statusCode: null,
+    headers: null,
+    socket: {
+      noDelay: false,
+      setNoDelay(value) {
+        this.noDelay = Boolean(value);
+      }
+    },
+    writeHead(statusCode, headers) {
+      this.statusCode = statusCode;
+      this.headers = headers;
+    },
+    flushHeaders() {
+      this.headersFlushed = true;
+    },
+    write(chunk, cb) {
+      if (this.destroyed || this.writableEnded) {
+        const err = new Error('Cannot call write after a stream was destroyed');
+        err.code = 'ERR_STREAM_DESTROYED';
+        cb?.(err);
+        return false;
+      }
+      this.chunks.push(String(chunk));
+      cb?.();
+      return true;
+    },
+    end(chunk, cb) {
+      if (this.destroyed) {
+        const err = new Error('Cannot call write after a stream was destroyed');
+        err.code = 'ERR_STREAM_DESTROYED';
+        cb?.(err);
+        return false;
+      }
+      if (chunk) {
+        this.chunks.push(String(chunk));
+      }
+      this.writableEnded = true;
+      cb?.();
+      return true;
+    }
+  };
+}

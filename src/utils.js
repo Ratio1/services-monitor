@@ -15,13 +15,15 @@ const formatMs = (ms) => `${(ms / 1000).toFixed(2)}s`;
 const shortId = () => crypto.randomBytes(4).toString('hex');
 
 const createTestFile = (label) => {
-  const base = `Ratio1 is the best ${label}! `;
+  const base = Buffer.from(`Ratio1 is the best ${label}! `, 'utf8');
   const targetBytes = 1_048_576; // ~1MB
-  let content = '';
-  while (Buffer.byteLength(content) < targetBytes) {
-    content += base;
+  const buffer = Buffer.alloc(targetBytes);
+
+  for (let offset = 0; offset < targetBytes; offset += base.length) {
+    const bytesToCopy = Math.min(base.length, targetBytes - offset);
+    base.copy(buffer, offset, 0, bytesToCopy);
   }
-  const buffer = Buffer.from(content);
+
   const preview = buffer.toString('utf8', 0, Math.min(50, buffer.length));
   return { buffer, preview, size: buffer.byteLength };
 };
@@ -35,9 +37,20 @@ const buildHtmlPreamble = () =>
 
 const buildHtmlFooter = () => '</div></body></html>';
 
+const buildLogLine = (message, cssClass = '') =>
+  `<div class="line${cssClass ? ` ${cssClass}` : ''}">${escapeHtml(message)}</div>\n`;
+
+const padHtmlToMinBytes = (html, minBytes = 0) => {
+  const currentBytes = Buffer.byteLength(html);
+  if (currentBytes >= minBytes) {
+    return html;
+  }
+  const padBytes = Math.max(minBytes - currentBytes - 7, 0);
+  return `${html}<!--${'.'.repeat(padBytes)}-->`;
+};
+
 const logChunk = async (res, message, cssClass = '') => {
-  const line = `<div class="line${cssClass ? ` ${cssClass}` : ''}">${escapeHtml(message)}</div>\n`;
-  await writeChunk(res, line);
+  await writeChunk(res, buildLogLine(message, cssClass));
 };
 
 const writeChunk = (res, chunk) =>
@@ -47,6 +60,70 @@ const writeChunk = (res, chunk) =>
       resolve();
     });
   });
+
+const endChunk = (res, chunk = '') =>
+  new Promise((resolve, reject) => {
+    try {
+      res.end(chunk);
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+const isStreamClosedError = (err) => {
+  const code = String(err?.code || '');
+  const message = String(err?.message || '');
+  return (
+    code === 'ERR_STREAM_DESTROYED' ||
+    code === 'EPIPE' ||
+    code === 'ECONNRESET' ||
+    message.includes('stream was destroyed') ||
+    message.includes('Cannot call write after a stream was destroyed') ||
+    message.includes('write after end')
+  );
+};
+
+function createResponseWriter(res) {
+  let closed = false;
+
+  const isClosed = () =>
+    closed || Boolean(res.destroyed || res.writableEnded || res.writableFinished);
+
+  const markClosed = () => {
+    closed = true;
+  };
+
+  const guardWrite = async (operation) => {
+    if (isClosed()) {
+      return false;
+    }
+    try {
+      await operation();
+      return true;
+    } catch (err) {
+      if (isStreamClosedError(err)) {
+        markClosed();
+        return false;
+      }
+      throw err;
+    }
+  };
+
+  return {
+    isClosed,
+    markClosed,
+    writeRaw(chunk) {
+      return guardWrite(() => writeChunk(res, chunk));
+    },
+    log(message, cssClass = '') {
+      return guardWrite(() => writeChunk(res, buildLogLine(message, cssClass)));
+    },
+    end(chunk = '') {
+      return guardWrite(() => endChunk(res, chunk));
+    }
+  };
+}
 
 const safeParseJson = (value) => {
   try {
@@ -87,8 +164,13 @@ module.exports = {
   createTestFile,
   buildHtmlPreamble,
   buildHtmlFooter,
+  buildLogLine,
+  padHtmlToMinBytes,
   logChunk,
   writeChunk,
+  endChunk,
+  isStreamClosedError,
+  createResponseWriter,
   safeParseJson,
   readR1fsPayload
 };

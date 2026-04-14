@@ -1,16 +1,19 @@
 const {
   buildHtmlFooter,
   buildHtmlPreamble,
+  buildLogLine,
   createTestFile,
+  createResponseWriter,
   escapeHtml,
   formatMs,
-  logChunk,
+  padHtmlToMinBytes,
   readR1fsPayload,
-  shortId,
-  writeChunk
+  shortId
 } = require('./utils');
 const { maybeSign } = require('./signing');
 const { waitForPeerData, cleanupArtifacts, uploadBufferToR1fs } = require('./runSupport');
+
+const INITIAL_STREAM_MIN_BYTES = 4096;
 
 function formatNodeDisplay({ alias, addr }) {
   if (alias && addr) {
@@ -69,6 +72,28 @@ function renderPeerDownloadErrorLine({ peerAlias, peer, error }) {
   })} reported an error while downloading: ${error}`;
 }
 
+function buildInitialResponseChunk({ version, hostAlias, hostAddr, slotId, runId }) {
+  const html = [
+    buildHtmlPreamble(),
+    buildLogLine(
+      renderStartLine({
+        version,
+        hostAlias,
+        hostAddr,
+        slotId,
+        runId
+      }),
+      'step'
+    ),
+    buildLogLine(
+      'Preparing run context and live checks. This page will keep streaming as results arrive.',
+      'muted'
+    )
+  ].join('');
+
+  return padHtmlToMinBytes(html, INITIAL_STREAM_MIN_BYTES);
+}
+
 async function verifyBroadcastRoundTrip({ sdk, config, broadcastPayload }) {
   const key = `run:${broadcastPayload.slotKey}`;
   const raw = await sdk.cstore.hget({
@@ -101,34 +126,76 @@ async function verifyBroadcastRoundTrip({ sdk, config, broadcastPayload }) {
 }
 
 async function handleRunRequest(req, res, { sdk, config, slotId }) {
-  res.writeHead(200, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-    'Transfer-Encoding': 'chunked'
-  });
-  res.write(buildHtmlPreamble());
-
-  const abortAt = Date.now() + config.timeouts.overallMs;
+  const writer = createResponseWriter(res);
   const runId = `${Date.now().toString(36)}-${shortId()}`;
-  const runSignature = await maybeSign(config, `run:${runId}`);
   const slotKey = `${config.hostAddr}-${slotId || 0}`;
   const reqClosed = { value: false };
+  const markDisconnected = () => {
+    if (reqClosed.value) {
+      return;
+    }
+    reqClosed.value = true;
+    writer.markClosed();
+    console.warn(`[services-monitor][run ${runId}] client disconnected; will abort soon`);
+  };
+
+  req.on('close', markDisconnected);
+  req.on('aborted', markDisconnected);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate, no-transform',
+    Pragma: 'no-cache',
+    Expires: '0',
+    Connection: 'keep-alive',
+    'Transfer-Encoding': 'chunked',
+    'X-Accel-Buffering': 'no'
+  });
+  res.socket?.setNoDelay?.(true);
+  res.flushHeaders?.();
+
+  const abortAt = Date.now() + config.timeouts.overallMs;
   let initiatorCid = null;
   const peerFileCids = [];
   let cleaned = false;
-  req.on('close', () => {
-    reqClosed.value = true;
-    console.warn(`[services-monitor][run ${runId}] client disconnected; will abort soon`);
-  });
+
+  const bootstrapWritten = await writer.writeRaw(
+    buildInitialResponseChunk({
+      version: config.version,
+      hostAlias: config.hostAlias,
+      hostAddr: config.hostAddr,
+      slotId,
+      runId
+    })
+  );
+  if (!bootstrapWritten) {
+    markDisconnected();
+    return;
+  }
 
   try {
     const ensureActive = () => {
-      if (reqClosed.value) {
+      if (reqClosed.value || writer.isClosed()) {
         throw new Error('Client disconnected; aborting run');
       }
       if (Date.now() > abortAt) {
         throw new Error('Run exceeded overall timeout (~3 minutes)');
+      }
+    };
+
+    const emitLog = async (message, cssClass = '') => {
+      const ok = await writer.log(message, cssClass);
+      if (!ok) {
+        markDisconnected();
+        throw new Error('Client disconnected; aborting run');
+      }
+    };
+
+    const emitRaw = async (chunk) => {
+      const ok = await writer.writeRaw(chunk);
+      if (!ok) {
+        markDisconnected();
+        throw new Error('Client disconnected; aborting run');
       }
     };
 
@@ -141,24 +208,8 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         config.peers.join(', ') || 'none'
       }`
     );
-    await logChunk(
-      res,
-      renderStartLine({
-        version: config.version,
-        hostAlias: config.hostAlias,
-        hostAddr: config.hostAddr,
-        slotId,
-        runId
-      }),
-      'step'
-    );
-    if (runSignature) {
-      await logChunk(res, 'Derived run signature via cstore-auth hasher', 'muted');
-      console.log(`[services-monitor][run ${runId}] derived run signature`);
-    }
 
-    await logChunk(
-      res,
+    await emitLog(
       config.peers.length
         ? `Peers detected: ${config.peers.join(', ')}`
         : 'No peers detected in R1EN_CHAINSTORE_PEERS',
@@ -167,7 +218,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
 
     const testSeed = shortId();
     const { buffer, preview } = createTestFile(testSeed);
-    await logChunk(res, `Created ~1MB test file (seed ${testSeed}, preview: "${preview}")`, 'muted');
+    await emitLog(`Created ~1MB test file (seed ${testSeed}, preview: "${preview}")`, 'muted');
     console.log(`[services-monitor][run ${runId}] created test file (seed ${testSeed})`);
 
     const uploadStart = Date.now();
@@ -178,14 +229,16 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     });
     const uploadMs = Date.now() - uploadStart;
     initiatorCid = uploadRes.cid;
-    await logChunk(
-      res,
-      `Saved initiator file to R1FS in ${formatMs(uploadMs)} (cid: ${initiatorCid})`,
-      'success'
-    );
+    await emitLog(`Saved initiator file to R1FS in ${formatMs(uploadMs)} (cid: ${initiatorCid})`, 'success');
     console.log(
       `[services-monitor][run ${runId}] uploaded initiator file cid=${initiatorCid} in ${uploadMs}ms`
     );
+
+    const runSignature = await maybeSign(config, `run:${runId}`);
+    if (runSignature) {
+      await emitLog('Derived run signature via cstore-auth hasher', 'muted');
+      console.log(`[services-monitor][run ${runId}] derived run signature`);
+    }
 
     const broadcastStart = Date.now();
     const broadcastPayload = {
@@ -208,11 +261,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       value: JSON.stringify(broadcastPayload)
     });
     const broadcastMs = Date.now() - broadcastStart;
-    await logChunk(
-      res,
-      `Posted file notification to CStore in ${formatMs(broadcastMs)}`,
-      'success'
-    );
+    await emitLog(`Posted file notification to CStore in ${formatMs(broadcastMs)}`, 'success');
     console.log(
       `[services-monitor][run ${runId}] posted broadcast to cstore in ${broadcastMs}ms (expires at ${broadcastPayload.expiresAt})`
     );
@@ -221,11 +270,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       config,
       broadcastPayload
     });
-    await logChunk(
-      res,
-      `Verified CStore round-trip for run:${slotKey} (runId ${verifiedBroadcast.runId})`,
-      'success'
-    );
+    await emitLog(`Verified CStore round-trip for run:${slotKey} (runId ${verifiedBroadcast.runId})`, 'success');
     console.log(
       `[services-monitor][run ${runId}] verified cstore round-trip for run:${slotKey}`
     );
@@ -252,8 +297,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       const peerDisplayBrowser = formatNodeDisplayForBrowser({ alias: ack.peerAlias, addr: ack.peer });
       if (ack.missing) {
         console.warn(`[services-monitor][run ${runId}] peer ${ack.peer} missing ack`);
-        await logChunk(
-          res,
+        await emitLog(
           `Peer ${peerDisplayBrowser} did not acknowledge within ${formatMs(config.timeouts.ackMs)}`,
           'error'
         );
@@ -262,8 +306,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       console.log(
         `[services-monitor][run ${runId}] peer ${peerDisplay} acked in ${ack.ackLatencyMs}ms`
       );
-      await logChunk(
-        res,
+      await emitLog(
         `Peer ${peerDisplayBrowser} responded to CStore message in ${formatMs(ack.ackLatencyMs ?? 0)}`,
         ack.error ? 'error' : 'muted'
       );
@@ -293,8 +336,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         console.warn(
           `[services-monitor][run ${runId}] peer ${pd.peer} missing download metrics within timeout`
         );
-        await logChunk(
-          res,
+        await emitLog(
           `Peer ${peerDisplayBrowser} did not report download metrics within ${formatMs(
             config.timeouts.downloadMs
           )}`,
@@ -304,8 +346,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       }
       if (pd.error) {
         console.warn(`[services-monitor][run ${runId}] peer ${pd.peer} reported download error`, pd.error);
-        await logChunk(
-          res,
+        await emitLog(
           renderPeerDownloadErrorLine({
             peerAlias: pd.peerAlias,
             peer: pd.peer,
@@ -318,8 +359,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       console.log(
         `[services-monitor][run ${runId}] peer ${peerDisplay} download=${pd.downloadMs}ms stream=${pd.streamMs}ms`
       );
-      await logChunk(
-        res,
+      await emitLog(
         `Peer ${peerDisplayBrowser}: downloaded in ${formatMs(
           pd.downloadMs ?? 0
         )}, streamed to Node.js in ${formatMs(pd.streamMs ?? 0)} (preview: "${pd.preview || 'n/a'}")`,
@@ -353,8 +393,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         console.warn(
           `[services-monitor][run ${runId}] peer ${reverse.peer} missing reverse upload announcement`
         );
-        await logChunk(
-          res,
+        await emitLog(
           `Peer ${peerDisplayBrowser} did not post reverse file within ${formatMs(
             config.timeouts.reverseMs
           )}`,
@@ -366,8 +405,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         console.warn(
           `[services-monitor][run ${runId}] peer ${reverse.peer} reverse upload failed: ${reverse.error}`
         );
-        await logChunk(
-          res,
+        await emitLog(
           `Peer ${peerDisplayBrowser} reverse upload failed: ${reverse.error || 'no cid provided'}`,
           'error'
         );
@@ -378,8 +416,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
         `[services-monitor][run ${runId}] reverse file from ${peerDisplay} cid=${reverse.fileCid} uploaded in ${reverse.uploadMs}ms`
       );
       const metadataLatency = reverse.uploadedAt ? Date.now() - reverse.uploadedAt : null;
-      await logChunk(
-        res,
+      await emitLog(
         `Reverse file announced by ${peerDisplayBrowser} (metadata latency: ${
           metadataLatency ? formatMs(metadataLatency) : 'n/a'
         })`,
@@ -394,8 +431,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       const preview50 = payload.buffer.toString('utf8', 0, Math.min(50, payload.buffer.length));
 
       const browserSendStart = Date.now();
-      await writeChunk(
-        res,
+      await emitRaw(
         renderPeerTransferLine({
           peerAlias: reverse.peerAlias,
           peer: reverse.peer,
@@ -409,8 +445,7 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       console.log(
         `[services-monitor][run ${runId}] received reverse from ${peerDisplay} fetch=${fetchMs}ms stream=${serverStreamMs}ms response=${browserSendMs}ms`
       );
-      await logChunk(
-        res,
+      await emitLog(
         renderPeerReceiveLine({
           peerAlias: reverse.peerAlias,
           peer: reverse.peer,
@@ -428,10 +463,12 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
     console.log(
       `[services-monitor][run ${runId}] cleaned artifacts (${[initiatorCid, ...peerFileCids].filter(Boolean).length} cids)`
     );
-    await logChunk(res, 'Test completed. Cleaned up artifacts.', 'step');
+    await emitLog('Test completed. Cleaned up artifacts.', 'step');
   } catch (err) {
     console.error(`[services-monitor][run ${runId}] failed`, err?.message || err);
-    await logChunk(res, `Run failed: ${err?.message || err}`, 'error');
+    if (!reqClosed.value && !writer.isClosed()) {
+      await writer.log(`Run failed: ${err?.message || err}`, 'error');
+    }
   } finally {
     if (!cleaned) {
       await cleanupArtifacts(sdk, config, [initiatorCid, ...peerFileCids], slotKey, runId).catch(
@@ -442,12 +479,14 @@ async function handleRunRequest(req, res, { sdk, config, slotId }) {
       );
     }
     if (!reqClosed.value) {
-      res.end(buildHtmlFooter());
+      await writer.end(buildHtmlFooter());
     }
   }
 }
 
 module.exports = {
+  INITIAL_STREAM_MIN_BYTES,
+  buildInitialResponseChunk,
   formatNodeDisplay,
   handleRunRequest,
   renderPeerDownloadErrorLine,
