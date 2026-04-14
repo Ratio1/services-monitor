@@ -100,6 +100,21 @@ Compatibility fallback:
 
 - if `R1EN_HOST_ID` is missing, the app falls back to `EE_HOST_ID`
 
+## Worker App Runner Sizing
+
+If you deploy `services-monitor` on the Deeploy generic Worker App Runner tiers, use `LITE` as the minimum recommended size:
+
+- `LITE`: `0.5` CPU, `1 GB` RAM, `4 GB` storage
+
+Why this is the floor:
+
+- the app is small on disk and has no real build step
+- it still runs a live Node.js HTTP server plus the 2-second background peer scan
+- each run creates an exact `1 MiB` in-memory payload and performs R1FS upload and download work
+- the server allows up to four concurrent active runs on one node
+
+`MICRO` may start the app, but it leaves too little CPU and memory headroom for predictable live behavior. If you expect heavier peer activity or you want more margin for the current four-slot concurrency model, move up to `ENTRY`.
+
 ## Coordination Model
 
 All live instances coordinate through one shared CStore hash:
