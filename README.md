@@ -100,6 +100,178 @@ Compatibility fallback:
 
 - if `R1EN_HOST_ID` is missing, the app falls back to `EE_HOST_ID`
 
+## Coordination Model
+
+All live instances coordinate through one shared CStore hash:
+
+```text
+hkey = services-monitor
+```
+
+The app does not create one hash per node or one hash per run. Each instance writes fields into the same hash and uses field names as the protocol namespace.
+
+### Key Structure
+
+For one active run, the field names follow this pattern:
+
+```text
+run:${slotKey}
+ack:${slotKey}:${peerAddr}
+peer:${slotKey}:${peerAddr}
+reverse:${slotKey}:${peerAddr}
+```
+
+Example:
+
+```text
+run:0xai_INITIATOR-2
+ack:0xai_INITIATOR-2:0xai_PEER
+peer:0xai_INITIATOR-2:0xai_PEER
+reverse:0xai_INITIATOR-2:0xai_PEER
+```
+
+Each key family has one job:
+
+- `run:*`: initiator broadcast that tells peers a new run exists
+- `ack:*`: peer acknowledgment that it saw the broadcast
+- `peer:*`: peer download result for the initiator file
+- `reverse:*`: peer reverse-upload announcement for the file the initiator should fetch back
+
+### Payload Contract
+
+The values are JSON strings.
+
+The initiator writes `run:${slotKey}` with a payload like:
+
+```json
+{
+  "type": "initiator-broadcast",
+  "runId": "mnyoo59r-2923388e",
+  "initiator": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm",
+  "slotKey": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm-2",
+  "slotId": 2,
+  "fileCid": "Qm...",
+  "preview": "Ratio1 is the best ...",
+  "startedAt": 1776174892342,
+  "createdAt": "2026-04-14T13:54:52.342Z",
+  "expiresAt": 1776175072342,
+  "peers": ["0xai_AsOOL9OyvlbaZ8SG6KvhebJcqZd9HA765GWNCTdnilgA"],
+  "runSignature": "argon2id:..."
+}
+```
+
+A peer writes `ack:${slotKey}:${peerAddr}` with:
+
+```json
+{
+  "runId": "mnyoo59r-2923388e",
+  "peer": "0xai_AsOOL9OyvlbaZ8SG6KvhebJcqZd9HA765GWNCTdnilgA",
+  "peerAlias": "dr1-thorn-02-4c",
+  "initiator": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm",
+  "slotKey": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm-2",
+  "ackedAt": 1776174893341,
+  "ackLatencyMs": 999,
+  "runSignature": "argon2id:...",
+  "peerSignature": "argon2id:...",
+  "message": "I see your post"
+}
+```
+
+A peer writes `peer:${slotKey}:${peerAddr}` with:
+
+```json
+{
+  "runId": "mnyoo59r-2923388e",
+  "peer": "0xai_AsOOL9OyvlbaZ8SG6KvhebJcqZd9HA765GWNCTdnilgA",
+  "peerAlias": "dr1-thorn-02-4c",
+  "initiator": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm",
+  "slotKey": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm-2",
+  "fileCid": "Qm...",
+  "ackedAt": 1776174893341,
+  "ackLatencyMs": 999,
+  "downloadMs": 545,
+  "streamMs": 8,
+  "preview": "Ratio1 is the best ...",
+  "error": null,
+  "recordedAt": 1776174894605,
+  "peerSignature": "argon2id:..."
+}
+```
+
+A peer writes `reverse:${slotKey}:${peerAddr}` with:
+
+```json
+{
+  "runId": "mnyoo59r-2923388e",
+  "peer": "0xai_AsOOL9OyvlbaZ8SG6KvhebJcqZd9HA765GWNCTdnilgA",
+  "peerAlias": "dr1-thorn-02-4c",
+  "initiator": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm",
+  "slotKey": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm-2",
+  "fileCid": "Qm_reverse...",
+  "uploadedAt": 1776174896430,
+  "uploadMs": 1032,
+  "preview": "Ratio1 is the best ...",
+  "error": null,
+  "peerSignature": "argon2id:..."
+}
+```
+
+### Slot Model
+
+`R1EN_HOST_ADDR` identifies the node. It does not identify one browser request.
+
+The server allows up to four concurrent runs per node. Each accepted request gets a `slotId` from `1..4`. The app builds:
+
+```text
+slotKey = ${hostAddr}-${slotId}
+```
+
+That gives each active run on a node its own key namespace.
+
+Why the app needs `slotKey`:
+
+- one node can serve more than one browser request at the same time
+- `hostAddr` alone would make concurrent runs overwrite the same `run:*`, `ack:*`, `peer:*`, and `reverse:*` fields
+- `slotKey` separates active runs on the same node
+
+The app also carries `runId` inside every payload. `runId` is the per-request identifier. `slotKey` is the per-node active lane. Reads check both so a newly reused slot does not accidentally accept stale data from an older run.
+
+### Polling Model
+
+Two polling patterns exist in live mode.
+
+Peer discovery:
+
+- every instance runs a background peer worker
+- every 2 seconds that worker calls `hgetall(services-monitor)`
+- it scans the shared hash for `run:*` entries with `type = initiator-broadcast`
+- it skips broadcasts that came from the same node
+
+Per-run waits:
+
+- once an initiator starts a run, it switches to targeted `hget()` polling
+- it polls for `ack:${slotKey}:${peer}`
+- then `peer:${slotKey}:${peer}`
+- then `reverse:${slotKey}:${peer}`
+
+This is why the CStore logs look chatty even when only two nodes participate in the run. The live coordination itself is point-to-point between the initiator and its listed peers, but every instance also performs the background full-hash scan.
+
+### Cleanup Behavior
+
+Cleanup is overwrite-based, not delete-based.
+
+At the end of a run, the app rewrites the run-specific fields with tombstones like:
+
+```json
+{
+  "runId": "mnyoo59r-2923388e",
+  "slotKey": "0xai_AhclX8pEpqk-E4QiEFoU5QuySrZsrUqoOFMhyFO0ZmAm-2",
+  "clearedAt": 1776174900552
+}
+```
+
+This keeps the protocol simple and leaves a short operational trace in CStore, but it also means the background `hgetall()` scan can still see historical fields until something else clears or replaces them.
+
 ## Local Development
 
 Install dependencies:
